@@ -2,16 +2,16 @@
 pragma solidity 0.8.15;
 
 /// @author philogy <https://github.com/philogy>
-contract Proxy {
+contract LogicProxy {
     bytes32 internal constant _IMPLEMENTATION_SLOT =
         0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
 
-    address internal immutable admin;
+    address internal immutable assetLayer;
 
     error InitUnsuccessful();
 
-    constructor(address _admin, address _startImplementation) {
-        admin = _admin;
+    constructor(address _assetLayer, address _startImplementation) {
+        assetLayer = _assetLayer;
         _setImplementation(_startImplementation);
     }
 
@@ -20,12 +20,29 @@ contract Proxy {
     }
 
     function upgradeTo(address _newImpl) external {
-        if (msg.sender == admin) _setImplementation(_newImpl);
+        if (msg.sender == assetLayer) _setImplementation(_newImpl);
         else _delegateToImpl();
     }
 
     function _delegateToImpl() internal {
+        // store immutable locally since immutables not supported in assembly
+        address assetLayerCached = assetLayer;
         assembly {
+            // deposit any ETH directly into asset layer
+            if callvalue() {
+                pop(
+                    call(
+                        gas(),
+                        assetLayerCached,
+                        callvalue(),
+                        0x00,
+                        0x00,
+                        0x00,
+                        0x00
+                    )
+                )
+            }
+            // forward calldata to implementation
             calldatacopy(0x00, 0x00, calldatasize())
             let success := delegatecall(
                 gas(),
