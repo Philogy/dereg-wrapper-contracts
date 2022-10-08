@@ -24,8 +24,11 @@ contract AssetLayer {
     error NotLogicModule();
     error AttemptedReentrancy();
     error TooLargeTotalDelay();
+    error AlreadySettled();
+    error NonexistentWithdrawal();
 
     enum WithdrawalType {
+        None,
         ERC20,
         ERC721
     }
@@ -215,6 +218,23 @@ contract AssetLayer {
                        EMERGENCY ACTIONS
     //////////////////////////////////////////////////////////////*/
 
+    function extendWithdrawal(uint256 _withdrawalId, uint24 _addedDelay)
+        external
+        only(factory)
+    {
+        if (
+            _withdrawalId >= nextWithdrawalId &&
+            withdrawals[_withdrawalId].wtype != WithdrawalType.None
+        ) revert NonexistentWithdrawal();
+        uint256 settlementTime = _getSettlementTime(_withdrawalId);
+        if (block.timestamp >= settlementTime) revert AlreadySettled();
+        withdrawals[_withdrawalId].delay += _addedDelay;
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                        INTERNAL METHODS
+    //////////////////////////////////////////////////////////////*/
+
     function _addWithdrawal(
         WithdrawalType _wtype,
         address _asset,
@@ -241,5 +261,27 @@ contract AssetLayer {
                 block.timestamp + delay
             );
         }
+    }
+
+    function _getSettlementTime(uint256 _withdrawalId)
+        internal
+        view
+        returns (uint256)
+    {
+        uint256 origTime = withdrawals[_withdrawalId].enqueuedAt;
+        uint256 origDelay = withdrawals[_withdrawalId].enqueuedAt;
+        return _addDelay(origTime + origDelay, delayExtendTime, delayExtension);
+    }
+
+    function _addDelay(
+        uint256 _origSettlementTime,
+        uint256 _addedTime,
+        uint256 _addedDelay
+    ) internal pure returns (uint256) {
+        if (_addedTime == 1) return _origSettlementTime;
+        return
+            _origSettlementTime < _addedTime
+                ? _origSettlementTime
+                : _origSettlementTime + _addedDelay;
     }
 }
