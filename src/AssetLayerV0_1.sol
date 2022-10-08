@@ -2,13 +2,16 @@
 pragma solidity 0.8.15;
 
 import {SafeTransferLib} from "solmate/utils/SafeTransferLib.sol";
+import {SafeCastLib} from "solmate/utils/SafeCastLib.sol";
+import {Math} from "@openzeppelin/utils/math/Math.sol";
 import {ERC20} from "solmate/tokens/ERC20.sol";
 import {IERC721} from "@openzeppelin/token/ERC721/IERC721.sol";
-import {Proxy} from "./utils/Proxy.sol";
+import {LogicProxy} from "./utils/LogicProxy.sol";
 
 /// @author philogy <https://github.com/philogy>
 contract AssetLayer {
     using SafeTransferLib for ERC20;
+    using SafeCastLib for uint256;
 
     event WithdrawalAdded(
         WithdrawalType indexed wtype,
@@ -20,6 +23,7 @@ contract AssetLayer {
 
     error NotLogicModule();
     error AttemptedReentrancy();
+    error TooLargeTotalDelay();
 
     enum WithdrawalType {
         ERC20,
@@ -46,6 +50,9 @@ contract AssetLayer {
     uint24 public withdrawDefaultDelay;
     uint8 internal reentryGuard = NO_ENTRY;
     address payable public logicModule;
+    uint64 internal delayExtendTime = 1;
+    uint24 internal delayExtension = 1;
+    bool public isPaused;
     address public upgrader;
 
     modifier only(address _authAccount) {
@@ -121,11 +128,8 @@ contract AssetLayer {
         upgrader = _newUpgrader;
     }
 
-    function setLogicModule(address payable _newLogicModule)
-        external
-        only(upgrader)
-    {
-        logicModule = _newLogicModule;
+    function setLogicModule(address _newLogicModule) external only(upgrader) {
+        logicModule = payable(_newLogicModule);
     }
 
     function upgradeAndCallProxyLogic(
@@ -134,7 +138,7 @@ contract AssetLayer {
         bytes memory _postUpgradeData
     ) external payable only(upgrader) {
         address payable logicModuleCached = logicModule;
-        Proxy(logicModuleCached).upgradeTo(_newLogicImplementation);
+        LogicProxy(logicModuleCached).upgradeTo(_newLogicImplementation);
         if (_doPostCall) {
             assembly {
                 let success := call(
@@ -160,6 +164,29 @@ contract AssetLayer {
 
     function setDefaultDelay(uint24 _delay) external only(factory) {
         withdrawDefaultDelay = _delay;
+    }
+
+    function extendGlobalDelay(uint256 _delayIncrease) external only(factory) {
+        uint256 delayExtendTimeCached = delayExtendTime;
+        uint256 delayExtensionCached = delayExtension;
+        if (delayExtendTimeCached == 0) {
+            delayExtendTime = uint64(block.timestamp);
+            delayExtension = _delayIncrease.safeCastTo24();
+        } else {
+            delayExtendTime = Math
+                .max(
+                    delayExtendTimeCached,
+                    block.timestamp - delayExtensionCached
+                )
+                .safeCastTo64();
+            delayExtension = (delayExtensionCached + _delayIncrease)
+                .safeCastTo24();
+        }
+    }
+
+    function resetGlobalDelayIncrease() external only(factory) {
+        delayExtendTime = 1;
+        delayExtension = 1;
     }
 
     /*//////////////////////////////////////////////////////////////

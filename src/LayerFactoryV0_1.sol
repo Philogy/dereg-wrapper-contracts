@@ -3,7 +3,7 @@ pragma solidity 0.8.15;
 
 import {Ownable} from "@openzeppelin/access/Ownable.sol";
 import {AssetLayer} from "./AssetLayerV0_1.sol";
-import {Proxy} from "./utils/Proxy.sol";
+import {LogicProxy} from "./utils/LogicProxy.sol";
 
 /// @author philogy <https://github.com/philogy>
 contract LayerFactoryV0_1 is Ownable {
@@ -28,7 +28,7 @@ contract LayerFactoryV0_1 is Ownable {
         external
     {
         AssetLayer assetLayer = new AssetLayer(payable(0), address(this));
-        Proxy logicModule = new Proxy(
+        LogicProxy logicModule = new LogicProxy(
             address(payable(assetLayer)),
             _implementation
         );
@@ -43,7 +43,7 @@ contract LayerFactoryV0_1 is Ownable {
         bytes memory _logicInitData
     ) external payable {
         AssetLayer assetLayer = new AssetLayer(payable(0), address(this));
-        Proxy logicModule = new Proxy(
+        LogicProxy logicModule = new LogicProxy(
             address(payable(assetLayer)),
             _implementation
         );
