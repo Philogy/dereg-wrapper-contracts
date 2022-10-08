@@ -25,7 +25,9 @@ contract AssetLayer {
     error AttemptedReentrancy();
     error TooLargeTotalDelay();
     error AlreadySettled();
+    error NotYetSettled();
     error NonexistentWithdrawal();
+    error InvalidWithdrawalType();
 
     enum WithdrawalType {
         None,
@@ -47,7 +49,7 @@ contract AssetLayer {
 
     address public immutable factory;
 
-    mapping(uint256 => Withdrawal) public withdrawals;
+    mapping(uint256 => Withdrawal) public getWithdrawal;
 
     uint64 internal nextWithdrawalId;
     uint24 public withdrawDefaultDelay;
@@ -55,7 +57,7 @@ contract AssetLayer {
     address payable public logicModule;
     uint64 internal delayExtendTime = 1;
     uint24 internal delayExtension = 1;
-    bool public isPaused;
+    uint64 internal frozenAt;
     address public upgrader;
 
     modifier only(address _authAccount) {
@@ -68,6 +70,14 @@ contract AssetLayer {
         reentryGuard = SINGLE_ENTRY;
         _;
         reentryGuard = NO_ENTRY;
+    }
+
+    modifier existingWithdrawal(uint256 _withdrawalId) {
+        if (
+            _withdrawalId >= nextWithdrawalId &&
+            getWithdrawal[_withdrawalId].wtype != WithdrawalType.None
+        ) revert NonexistentWithdrawal();
+        _;
     }
 
     constructor(address payable _logicModule, address _upgrader) {
@@ -214,6 +224,34 @@ contract AssetLayer {
             _addWithdrawal(WithdrawalType.ERC721, _token, _recipient, _tokenId);
     }
 
+    function executeSettlement(uint256 _withdrawalId)
+        external
+        existingWithdrawal(_withdrawalId)
+    {
+        if (!settled(_withdrawalId)) revert NotYetSettled();
+        WithdrawalType wtype = getWithdrawal[_withdrawalId].wtype;
+        address asset = getWithdrawal[_withdrawalId].asset;
+        address recipient = getWithdrawal[_withdrawalId].recipient;
+        uint256 assetDenominator = getWithdrawal[_withdrawalId]
+            .assetDenominator;
+        delete getWithdrawal[_withdrawalId];
+        if (wtype == WithdrawalType.ERC20) {
+            ERC20(asset).safeTransfer(recipient, assetDenominator);
+        } else if (wtype == WithdrawalType.ERC721) {
+            IERC721(asset).transferFrom(
+                address(this),
+                recipient,
+                assetDenominator
+            );
+        } else {
+            revert InvalidWithdrawalType();
+        }
+    }
+
+    function settled(uint256 _withdrawalId) public view returns (bool) {
+        return _getSettlementTime(_withdrawalId) <= block.timestamp;
+    }
+
     /*//////////////////////////////////////////////////////////////
                        EMERGENCY ACTIONS
     //////////////////////////////////////////////////////////////*/
@@ -221,14 +259,10 @@ contract AssetLayer {
     function extendWithdrawal(uint256 _withdrawalId, uint24 _addedDelay)
         external
         only(factory)
+        existingWithdrawal(_withdrawalId)
     {
-        if (
-            _withdrawalId >= nextWithdrawalId &&
-            withdrawals[_withdrawalId].wtype != WithdrawalType.None
-        ) revert NonexistentWithdrawal();
-        uint256 settlementTime = _getSettlementTime(_withdrawalId);
-        if (block.timestamp >= settlementTime) revert AlreadySettled();
-        withdrawals[_withdrawalId].delay += _addedDelay;
+        if (settled(_withdrawalId)) revert AlreadySettled();
+        getWithdrawal[_withdrawalId].delay += _addedDelay;
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -244,7 +278,7 @@ contract AssetLayer {
         unchecked {
             withdrawalId = nextWithdrawalId++;
             uint256 delay = withdrawDefaultDelay;
-            withdrawals[withdrawalId] = Withdrawal({
+            getWithdrawal[withdrawalId] = Withdrawal({
                 enqueuedAt: uint64(block.timestamp),
                 delay: uint24(delay),
                 wtype: _wtype,
@@ -268,8 +302,8 @@ contract AssetLayer {
         view
         returns (uint256)
     {
-        uint256 origTime = withdrawals[_withdrawalId].enqueuedAt;
-        uint256 origDelay = withdrawals[_withdrawalId].enqueuedAt;
+        uint256 origTime = getWithdrawal[_withdrawalId].enqueuedAt;
+        uint256 origDelay = getWithdrawal[_withdrawalId].enqueuedAt;
         return _addDelay(origTime + origDelay, delayExtendTime, delayExtension);
     }
 
