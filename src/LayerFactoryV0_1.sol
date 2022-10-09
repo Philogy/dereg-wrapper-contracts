@@ -2,19 +2,28 @@
 pragma solidity 0.8.15;
 
 import {Ownable} from "@openzeppelin/access/Ownable.sol";
+import {Multicallable} from "solady/utils/Multicallable.sol";
 import {AssetLayer} from "./AssetLayerV0_1.sol";
 import {LogicProxy} from "./utils/LogicProxy.sol";
+import {RawCallLib} from "./utils/RawCallLib.sol";
 
 /// @author philogy <https://github.com/philogy>
-contract LayerFactoryV0_1 is Ownable {
+contract LayerFactoryV0_1 is Ownable, Multicallable {
+    using RawCallLib for address;
+
     event AppCreated(address indexed app);
 
     error CannotReduceExpiry();
+    error NotApp();
 
     mapping(address => uint256) public getAppWatchExpiry;
     mapping(address => bool) public getCreatedHere;
 
     constructor() Ownable() {}
+
+    /*//////////////////////////////////////////////////////////////
+                          MANAGE APPS
+    //////////////////////////////////////////////////////////////*/
 
     function setAppWatchExpiry(address _app, uint256 _newExpiry)
         external
@@ -24,55 +33,28 @@ contract LayerFactoryV0_1 is Ownable {
         getAppWatchExpiry[_app] = _newExpiry;
     }
 
-    function createAppProxyLogic(address _upgrader, address _implementation)
-        external
-    {
-        AssetLayer assetLayer = new AssetLayer(payable(0), address(this));
-        LogicProxy logicModule = new LogicProxy(
-            address(payable(assetLayer)),
-            _implementation
-        );
-        assetLayer.setLogicModule(payable(logicModule));
-        assetLayer.setUpgrader(_upgrader);
-        _registerApp(assetLayer);
+    function callApp(address _app, bytes memory _data) external onlyOwner {
+        if (!getCreatedHere[_app]) revert NotApp();
+        _app.rawCall(_data);
     }
 
-    function createAppProxyLogic(
+    /*//////////////////////////////////////////////////////////////
+                           CREATE APP
+    //////////////////////////////////////////////////////////////*/
+
+    function createApp(address _upgrader, address _implementation) external {
+        _registerApp(new AssetLayer(_upgrader, _implementation));
+    }
+
+    function createAppAndCall(
         address _upgrader,
         address _implementation,
         bytes memory _logicInitData
     ) external payable {
-        AssetLayer assetLayer = new AssetLayer(payable(0), address(this));
-        LogicProxy logicModule = new LogicProxy(
-            address(payable(assetLayer)),
-            _implementation
-        );
-        assembly {
-            let success := call(
-                gas(),
-                logicModule,
-                callvalue(),
-                add(_logicInitData, 0x20),
-                mload(_logicInitData),
-                0x00,
-                0x00
-            )
-
-            if iszero(success) {
-                returndatacopy(0x00, 0x00, returndatasize())
-                revert(0x00, returndatasize())
-            }
-        }
-
-        assetLayer.setLogicModule(payable(logicModule));
-        assetLayer.setUpgrader(_upgrader);
+        AssetLayer assetLayer = new AssetLayer(_upgrader, _implementation);
+        address logicModule = address(assetLayer.logicModule());
+        logicModule.rawCall(_logicInitData, msg.value);
         _registerApp(assetLayer);
-    }
-
-    function createAppBasic(address payable _logicModule, address _upgrader)
-        external
-    {
-        _registerApp(new AssetLayer(_logicModule, _upgrader));
     }
 
     function _registerApp(AssetLayer _assetLayer) internal {

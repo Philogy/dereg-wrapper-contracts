@@ -8,6 +8,7 @@ import {MerkleProofLib} from "solady/utils/MerkleProofLib.sol";
 import {Math} from "@openzeppelin/utils/math/Math.sol";
 import {IERC721} from "@openzeppelin/token/ERC721/IERC721.sol";
 import {LogicProxy} from "./utils/LogicProxy.sol";
+import {RawCallLib} from "./utils/RawCallLib.sol";
 import {IAssetLayerV0_1} from "./IAssetLayerV0_1.sol";
 
 /// @author philogy <https://github.com/philogy>
@@ -15,6 +16,7 @@ contract AssetLayer is IAssetLayerV0_1 {
     using SafeTransferLib for ERC20;
     using SafeCastLib for uint256;
     using MerkleProofLib for bytes32[];
+    using RawCallLib for address;
 
     event WithdrawalAdded(
         WithdrawalType indexed wtype,
@@ -174,23 +176,7 @@ contract AssetLayer is IAssetLayerV0_1 {
     ) external payable only(upgrader) {
         address payable logicModuleCached = logicModule;
         LogicProxy(logicModuleCached).upgradeTo(_newLogicImplementation);
-        if (_doPostCall) {
-            assembly {
-                let success := call(
-                    gas(),
-                    logicModuleCached,
-                    callvalue(),
-                    add(_postUpgradeData, 0x20),
-                    mload(_postUpgradeData),
-                    0x00,
-                    0x00
-                )
-                if iszero(success) {
-                    returndatacopy(0x00, 0x00, returndatasize())
-                    revert(0x00, returndatasize())
-                }
-            }
-        }
+        if (_doPostCall) address(logicModuleCached).rawCall(_postUpgradeData);
     }
 
     /*//////////////////////////////////////////////////////////////

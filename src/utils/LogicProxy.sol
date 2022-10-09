@@ -30,17 +30,7 @@ contract LogicProxy {
         assembly {
             // deposit any ETH directly into asset layer
             if callvalue() {
-                pop(
-                    call(
-                        gas(),
-                        assetLayerCached,
-                        callvalue(),
-                        0x00,
-                        0x00,
-                        0x00,
-                        0x00
-                    )
-                )
+                pop(call(gas(), assetLayerCached, callvalue(), 0, 0, 0, 0))
             }
             // forward calldata to implementation
             calldatacopy(0x00, 0x00, calldatasize())
@@ -49,8 +39,8 @@ contract LogicProxy {
                 sload(_IMPLEMENTATION_SLOT),
                 0x00,
                 calldatasize(),
-                0x00,
-                0x00
+                0,
+                0
             )
             returndatacopy(0x00, 0x00, returndatasize())
             if success {
