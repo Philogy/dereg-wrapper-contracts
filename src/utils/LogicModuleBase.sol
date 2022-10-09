@@ -75,7 +75,7 @@ abstract contract LogicModuleBase {
     }
 
     function transferETH(address _recipient, uint256 _amount) internal {
-        getAssetLayer().withdrawNative(_recipient, _amount);
+        transferNative(_recipient, _amount);
     }
 
     function transferNative(address _recipient, uint256 _amount) internal {
