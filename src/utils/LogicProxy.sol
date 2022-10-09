@@ -3,12 +3,11 @@ pragma solidity 0.8.15;
 
 /// @author philogy <https://github.com/philogy>
 contract LogicProxy {
+    // `keccak256("eip1967.proxy.implementation") - 1`
     bytes32 internal constant _IMPLEMENTATION_SLOT =
         0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
 
     address internal immutable assetLayer;
-
-    error InitUnsuccessful();
 
     constructor(address _assetLayer, address _startImplementation) {
         assetLayer = _assetLayer;
@@ -19,11 +18,19 @@ contract LogicProxy {
         _delegateToImpl();
     }
 
-    function upgradeTo(address _newImpl) external {
+    /*
+     * @dev Sets implementation if caller is `assetLayer`, forwards to
+     * implementation otherwise incase it has its own `upgradeTo` method.
+     * */
+    function upgradeTo(address _newImpl) external payable {
         if (msg.sender == assetLayer) _setImplementation(_newImpl);
         else _delegateToImpl();
     }
 
+    /*
+     * @dev Forwards calldata to implementation sending any ETH to the
+     * `assetLayer`.
+     * */
     function _delegateToImpl() internal {
         // store immutable locally since immutables not supported in assembly
         address assetLayerCached = assetLayer;
