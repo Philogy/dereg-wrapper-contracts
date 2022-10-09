@@ -3,16 +3,35 @@ pragma solidity 0.8.15;
 
 /// @author philogy <https://github.com/philogy>
 interface IAssetLayerV0_1 {
-    function setDefaultDelay(uint24 _delay) external;
+    function pullERC20(
+        address _collection,
+        address _sender,
+        uint256 _tokenAmount
+    ) external returns (uint256);
 
-    function extendGlobalDelay(uint256 _delayIncrease) external;
+    function naivePullERC20(
+        address _collection,
+        address _sender,
+        uint256 _tokenAmount
+    ) external;
 
-    function resetGlobalDelayIncrease() external;
+    function pullERC721(
+        address _collection,
+        address _owner,
+        uint256 _tokenId
+    ) external;
 
-    function extendWithdrawalDelay(uint256 _withdrawalId, uint24 _addedDelay)
-        external;
+    function withdrawERC20(
+        address _token,
+        address _recipient,
+        uint256 _tokens
+    ) external;
 
-    function freeze() external;
+    function withdrawERC721(
+        address _token,
+        address _recipient,
+        uint256 _tokenId
+    ) external;
 
-    function unfreeze(bytes32 _validWithdrawalsRoot) external;
+    function withdrawNative(address _recipient, uint256 _amount) external;
 }

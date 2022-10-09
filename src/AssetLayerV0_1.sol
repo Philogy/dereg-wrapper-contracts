@@ -5,6 +5,7 @@ import {SafeTransferLib} from "solmate/utils/SafeTransferLib.sol";
 import {SafeCastLib} from "solmate/utils/SafeCastLib.sol";
 import {ERC20} from "solmate/tokens/ERC20.sol";
 import {MerkleProofLib} from "solady/utils/MerkleProofLib.sol";
+import {Multicallable} from "solady/utils/Multicallable.sol";
 import {Math} from "@openzeppelin/utils/math/Math.sol";
 import {IERC721} from "@openzeppelin/token/ERC721/IERC721.sol";
 import {LogicProxy} from "./utils/LogicProxy.sol";
@@ -12,7 +13,7 @@ import {RawCallLib} from "./utils/RawCallLib.sol";
 import {IAssetLayerV0_1} from "./IAssetLayerV0_1.sol";
 
 /// @author philogy <https://github.com/philogy>
-contract AssetLayer is IAssetLayerV0_1 {
+contract AssetLayer is IAssetLayerV0_1, Multicallable {
     using SafeTransferLib for ERC20;
     using SafeCastLib for uint256;
     using MerkleProofLib for bytes32[];
@@ -40,7 +41,8 @@ contract AssetLayer is IAssetLayerV0_1 {
     enum WithdrawalType {
         None,
         ERC20,
-        ERC721
+        ERC721,
+        NATIVE
     }
 
     struct Withdrawal {
@@ -117,7 +119,7 @@ contract AssetLayer is IAssetLayerV0_1 {
     //////////////////////////////////////////////////////////////*/
 
     function pullERC20(
-        address _collection,
+        address _token,
         address _sender,
         uint256 _tokenAmount
     )
@@ -126,27 +128,17 @@ contract AssetLayer is IAssetLayerV0_1 {
         nonReentrant
         returns (uint256 depositedAmount)
     {
-        uint256 balBefore = ERC20(_collection).balanceOf(address(this));
-        ERC20(_collection).safeTransferFrom(
-            _sender,
-            address(this),
-            _tokenAmount
-        );
-        depositedAmount =
-            ERC20(_collection).balanceOf(address(this)) -
-            balBefore;
+        uint256 balBefore = ERC20(_token).balanceOf(address(this));
+        ERC20(_token).safeTransferFrom(_sender, address(this), _tokenAmount);
+        depositedAmount = ERC20(_token).balanceOf(address(this)) - balBefore;
     }
 
     function naivePullERC20(
-        address _collection,
+        address _token,
         address _sender,
         uint256 _tokenAmount
     ) external only(logicModule) nonReentrant {
-        ERC20(_collection).safeTransferFrom(
-            _sender,
-            address(this),
-            _tokenAmount
-        );
+        ERC20(_token).safeTransferFrom(_sender, address(this), _tokenAmount);
     }
 
     function pullERC721(
@@ -217,19 +209,24 @@ contract AssetLayer is IAssetLayerV0_1 {
     function withdrawERC20(
         address _token,
         address _recipient,
-        uint256 _tokens
-    ) external only(logicModule) returns (uint256) {
-        return
-            _addWithdrawal(WithdrawalType.ERC20, _token, _recipient, _tokens);
+        uint256 _amount
+    ) external only(logicModule) {
+        _addWithdrawal(WithdrawalType.ERC20, _token, _recipient, _amount);
     }
 
     function withdrawERC721(
         address _token,
         address _recipient,
         uint256 _tokenId
-    ) external only(logicModule) returns (uint256) {
-        return
-            _addWithdrawal(WithdrawalType.ERC721, _token, _recipient, _tokenId);
+    ) external only(logicModule) {
+        _addWithdrawal(WithdrawalType.ERC721, _token, _recipient, _tokenId);
+    }
+
+    function withdrawNative(address _recipient, uint256 _amount)
+        external
+        only(logicModule)
+    {
+        _addWithdrawal(WithdrawalType.NATIVE, address(0), _recipient, _amount);
     }
 
     function executeDirectSettlement(uint256 _withdrawalId)
@@ -315,9 +312,9 @@ contract AssetLayer is IAssetLayerV0_1 {
         address _asset,
         address _recipient,
         uint256 _assetDenominator
-    ) internal whileNotFrozen returns (uint256 withdrawalId) {
+    ) internal whileNotFrozen {
         unchecked {
-            withdrawalId = nextWithdrawalId++;
+            uint256 withdrawalId = nextWithdrawalId++;
             uint256 delay = withdrawDefaultDelay;
             getWithdrawal[withdrawalId] = Withdrawal({
                 enqueuedAt: uint64(block.timestamp),
@@ -338,7 +335,7 @@ contract AssetLayer is IAssetLayerV0_1 {
         }
     }
 
-    function _executeSettlement(uint256 _withdrawalId) internal {
+    function _executeSettlement(uint256 _withdrawalId) internal nonReentrant {
         WithdrawalType wtype = getWithdrawal[_withdrawalId].wtype;
         address asset = getWithdrawal[_withdrawalId].asset;
         address recipient = getWithdrawal[_withdrawalId].recipient;
@@ -353,6 +350,8 @@ contract AssetLayer is IAssetLayerV0_1 {
                 recipient,
                 assetDenominator
             );
+        } else if (wtype == WithdrawalType.NATIVE) {
+            SafeTransferLib.safeTransferETH(recipient, assetDenominator);
         } else {
             revert InvalidWithdrawalType();
         }
