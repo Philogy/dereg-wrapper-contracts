@@ -203,7 +203,7 @@ contract AssetLayer is IAssetLayerV0_1, Multicallable {
     }
 
     /*//////////////////////////////////////////////////////////////
-                ASSET WITHDRAWAL AND SETTLEMENT
+                        ASSET WITHDRAWAL
     //////////////////////////////////////////////////////////////*/
 
     function withdrawERC20(
@@ -228,6 +228,10 @@ contract AssetLayer is IAssetLayerV0_1, Multicallable {
     {
         _addWithdrawal(WithdrawalType.NATIVE, address(0), _recipient, _amount);
     }
+
+    /*//////////////////////////////////////////////////////////////
+                           SETTLEMENT
+    //////////////////////////////////////////////////////////////*/
 
     function executeDirectSettlement(uint256 _withdrawalId)
         external
