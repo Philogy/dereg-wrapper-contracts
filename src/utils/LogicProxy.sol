@@ -7,10 +7,10 @@ contract LogicProxy {
     bytes32 internal constant _IMPLEMENTATION_SLOT =
         0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
 
-    address internal immutable assetLayer;
+    address public immutable getAssetLayer;
 
     constructor(address _assetLayer, address _startImplementation) {
-        assetLayer = _assetLayer;
+        getAssetLayer = _assetLayer;
         _setImplementation(_startImplementation);
     }
 
@@ -23,7 +23,7 @@ contract LogicProxy {
      * implementation otherwise incase it has its own `upgradeTo` method.
      * */
     function upgradeTo(address _newImpl) external payable {
-        if (msg.sender == assetLayer) _setImplementation(_newImpl);
+        if (msg.sender == getAssetLayer) _setImplementation(_newImpl);
         else _delegateToImpl();
     }
 
@@ -33,11 +33,11 @@ contract LogicProxy {
      * */
     function _delegateToImpl() internal {
         // store immutable locally since immutables not supported in assembly
-        address assetLayerCached = assetLayer;
+        address assetLayer = getAssetLayer;
         assembly {
             // deposit any ETH directly into asset layer
             if callvalue() {
-                pop(call(gas(), assetLayerCached, callvalue(), 0, 0, 0, 0))
+                pop(call(gas(), assetLayer, callvalue(), 0, 0, 0, 0))
             }
             // forward calldata to implementation
             calldatacopy(0x00, 0x00, calldatasize())
