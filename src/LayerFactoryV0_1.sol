@@ -8,7 +8,7 @@ import {LogicProxy} from "./utils/LogicProxy.sol";
 import {RawCallLib} from "./utils/RawCallLib.sol";
 
 /// @author philogy <https://github.com/philogy>
-contract LayerFactoryV0_1 is Ownable, Multicallable {
+contract LayerFactory is Ownable, Multicallable {
     using RawCallLib for address;
 
     event AppCreated(address indexed app);
