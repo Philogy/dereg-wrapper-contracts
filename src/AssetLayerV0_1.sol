@@ -23,11 +23,12 @@ contract AssetLayer is IAssetLayerV0_1, Multicallable {
         WithdrawalType indexed wtype,
         address indexed asset,
         address indexed recipient,
+        uint256 withdrawalId,
         uint256 assetDenominator,
         uint256 settlesAt
     );
 
-    error NotLogicModule();
+    error UnauthorizedCaller();
     error AttemptedReentrancy();
     error TooLargeTotalDelay();
     error AlreadySettled();
@@ -62,14 +63,14 @@ contract AssetLayer is IAssetLayerV0_1, Multicallable {
 
     address public immutable factory;
 
-    mapping(uint256 => Withdrawal) public getWithdrawal;
+    mapping(uint256 => Withdrawal) internal withdrawals;
     mapping(uint256 => Freeze) public getFreeze;
 
     uint8 internal constant NO_ENTRY = 1;
     uint8 internal constant SINGLE_ENTRY = 2;
 
     uint8 internal reentryGuard = NO_ENTRY;
-    uint64 internal nextWithdrawalId;
+    uint64 public nextWithdrawalId;
     uint24 public withdrawDefaultDelay;
     address payable public logicModule;
 
@@ -82,7 +83,7 @@ contract AssetLayer is IAssetLayerV0_1, Multicallable {
     address public upgrader;
 
     modifier only(address _authAccount) {
-        if (msg.sender != _authAccount) revert NotLogicModule();
+        if (msg.sender != _authAccount) revert UnauthorizedCaller();
         _;
     }
 
@@ -95,8 +96,8 @@ contract AssetLayer is IAssetLayerV0_1, Multicallable {
 
     modifier existingWithdrawal(uint256 _withdrawalId) {
         if (
-            _withdrawalId >= nextWithdrawalId &&
-            getWithdrawal[_withdrawalId].wtype != WithdrawalType.None
+            _withdrawalId >= nextWithdrawalId ||
+            withdrawals[_withdrawalId].wtype == WithdrawalType.None
         ) revert NonexistentWithdrawal();
         _;
     }
@@ -106,10 +107,15 @@ contract AssetLayer is IAssetLayerV0_1, Multicallable {
         _;
     }
 
-    constructor(address _upgrader, address _initialLogicImpl) {
+    constructor(
+        address _upgrader,
+        address _initialLogicImpl,
+        uint24 _withdrawDefaultDelay
+    ) {
         factory = msg.sender;
         upgrader = _upgrader;
-        logicModule = payable(new LogicProxy(address(this), _initialLogicImpl));
+        logicModule = payable(new LogicProxy(_initialLogicImpl));
+        withdrawDefaultDelay = _withdrawDefaultDelay;
     }
 
     receive() external payable {}
@@ -229,6 +235,14 @@ contract AssetLayer is IAssetLayerV0_1, Multicallable {
         _addWithdrawal(WithdrawalType.NATIVE, address(0), _recipient, _amount);
     }
 
+    function getWithdrawal(uint256 _withdrawalId)
+        external
+        view
+        returns (Withdrawal memory)
+    {
+        return withdrawals[_withdrawalId];
+    }
+
     /*//////////////////////////////////////////////////////////////
                            SETTLEMENT
     //////////////////////////////////////////////////////////////*/
@@ -287,7 +301,7 @@ contract AssetLayer is IAssetLayerV0_1, Multicallable {
         existingWithdrawal(_withdrawalId)
     {
         if (settled(_withdrawalId)) revert AlreadySettled();
-        getWithdrawal[_withdrawalId].delay += _addedDelay;
+        withdrawals[_withdrawalId].delay += _addedDelay;
     }
 
     function freeze() external only(factory) whileNotFrozen {
@@ -320,7 +334,7 @@ contract AssetLayer is IAssetLayerV0_1, Multicallable {
         unchecked {
             uint256 withdrawalId = nextWithdrawalId++;
             uint256 delay = withdrawDefaultDelay;
-            getWithdrawal[withdrawalId] = Withdrawal({
+            withdrawals[withdrawalId] = Withdrawal({
                 enqueuedAt: uint64(block.timestamp),
                 delay: uint24(delay),
                 wtype: _wtype,
@@ -333,6 +347,7 @@ contract AssetLayer is IAssetLayerV0_1, Multicallable {
                 _wtype,
                 _asset,
                 _recipient,
+                withdrawalId,
                 _assetDenominator,
                 block.timestamp + delay
             );
@@ -340,12 +355,11 @@ contract AssetLayer is IAssetLayerV0_1, Multicallable {
     }
 
     function _executeSettlement(uint256 _withdrawalId) internal nonReentrant {
-        WithdrawalType wtype = getWithdrawal[_withdrawalId].wtype;
-        address asset = getWithdrawal[_withdrawalId].asset;
-        address recipient = getWithdrawal[_withdrawalId].recipient;
-        uint256 assetDenominator = getWithdrawal[_withdrawalId]
-            .assetDenominator;
-        delete getWithdrawal[_withdrawalId];
+        WithdrawalType wtype = withdrawals[_withdrawalId].wtype;
+        address asset = withdrawals[_withdrawalId].asset;
+        address recipient = withdrawals[_withdrawalId].recipient;
+        uint256 assetDenominator = withdrawals[_withdrawalId].assetDenominator;
+        delete withdrawals[_withdrawalId];
         if (wtype == WithdrawalType.ERC20) {
             ERC20(asset).safeTransfer(recipient, assetDenominator);
         } else if (wtype == WithdrawalType.ERC721) {
@@ -366,8 +380,8 @@ contract AssetLayer is IAssetLayerV0_1, Multicallable {
         view
         returns (uint256 origTime, uint256 settlementTime)
     {
-        origTime = getWithdrawal[_withdrawalId].enqueuedAt;
-        uint256 origDelay = getWithdrawal[_withdrawalId].enqueuedAt;
+        origTime = withdrawals[_withdrawalId].enqueuedAt;
+        uint256 origDelay = withdrawals[_withdrawalId].delay;
         settlementTime = _addDelay(
             origTime + origDelay,
             delayExtendTime,

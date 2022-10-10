@@ -9,8 +9,8 @@ contract LogicProxy {
 
     address public immutable getAssetLayer;
 
-    constructor(address _assetLayer, address _startImplementation) {
-        getAssetLayer = _assetLayer;
+    constructor(address _startImplementation) {
+        getAssetLayer = msg.sender;
         _setImplementation(_startImplementation);
     }
 
