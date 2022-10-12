@@ -261,6 +261,7 @@ contract AssetLayer is IAssetLayerV0_1, Multicallable {
         uint256 _withdrawalId,
         uint256 _freezeId
     ) external existingWithdrawal(_withdrawalId) {
+        // TODO: Check stored global delay
         (uint256 origTime, uint256 settlementTime) = _getSettlementTime(
             _withdrawalId
         );
