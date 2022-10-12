@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-2.0-only
 pragma solidity 0.8.15;
 
 import {Test} from "forge-std/Test.sol";
@@ -12,10 +12,9 @@ import {MockERC20} from "./mocks/MockERC20.sol";
 /// @author philogy <https://github.com/philogy>
 contract AssetLayerV0_1Test is Test {
     event WithdrawalAdded(
-        AssetLayer.WithdrawalType indexed wtype,
-        address indexed asset,
+        uint256 indexed withdrawalId,
+        bytes21 indexed assetId,
         address indexed recipient,
-        uint256 withdrawalId,
         uint256 assetDenominator,
         uint256 settlesAt
     );
@@ -60,7 +59,7 @@ contract AssetLayerV0_1Test is Test {
     }
 
     function testPullERC20() public {
-        (MockApp app, AssetLayer assetLayer) = getMockApp();
+        (, AssetLayer assetLayer) = getMockApp();
         MockERC20 token = new MockERC20();
         token.mint(users[0], 100e18);
 
@@ -75,9 +74,9 @@ contract AssetLayerV0_1Test is Test {
     }
 
     function testCannotSettleNonexistent() public {
-        (MockApp app, AssetLayer assetLayer) = getMockApp();
+        (, AssetLayer assetLayer) = getMockApp();
         vm.expectRevert(AssetLayer.NonexistentWithdrawal.selector);
-        assetLayer.executeDirectSettlement(1);
+        assetLayer.executeDirectSettlement(0xffff);
     }
 
     function testBasicSettlement() public {
@@ -88,11 +87,13 @@ contract AssetLayerV0_1Test is Test {
         uint256 withdrawAmount = 15e18;
         vm.expectEmit(true, true, true, true);
         uint256 nextId = assetLayer.nextWithdrawalId();
+
         emit WithdrawalAdded(
-            AssetLayer.WithdrawalType.ERC20,
-            address(token),
-            users[0],
             nextId,
+            bytes21(
+                abi.encodePacked(AssetLayer.AssetType.ERC20, address(token))
+            ),
+            users[0],
             withdrawAmount,
             block.timestamp + defaultDelay
         );
@@ -102,7 +103,7 @@ contract AssetLayerV0_1Test is Test {
         );
         assertEq(withdrawal.enqueuedAt, block.timestamp);
         assertEq(withdrawal.delay, defaultDelay);
-        assertTrue(withdrawal.wtype == AssetLayer.WithdrawalType.ERC20);
+        assertTrue(withdrawal.atype == AssetLayer.AssetType.ERC20);
         assertEq(withdrawal.asset, address(token));
         assertEq(withdrawal.recipient, users[0]);
         assertEq(withdrawal.assetDenominator, withdrawAmount);
@@ -114,6 +115,61 @@ contract AssetLayerV0_1Test is Test {
 
         vm.warp(uint256(withdrawal.enqueuedAt) + uint256(withdrawal.delay));
         assertEq(assetLayer.settled(nextId), true);
+        vm.prank(users[1]);
+        uint256 balBefore = token.balanceOf(users[0]);
+        assetLayer.executeDirectSettlement(nextId);
+        uint256 balAfter = token.balanceOf(users[0]);
+        assertEq(balAfter - balBefore, withdrawAmount);
+    }
+
+    function testCreateAssetId(uint8 _atype, address _asset) public {
+        vm.assume(_atype <= uint8(type(AssetLayer.AssetType).max));
+        AssetLayer.AssetType atype = AssetLayer.AssetType(_atype);
+        (, AssetLayer assetLayer) = getMockApp();
+        assertEq(
+            bytes21(abi.encodePacked(atype, _asset)),
+            assetLayer.getAssetId(atype, _asset)
+        );
+    }
+
+    function testDelayIndividualSettlement() public {
+        (MockApp app, AssetLayer assetLayer) = getMockApp();
+        MockERC20 token = new MockERC20();
+        token.mint(address(assetLayer), 100e18);
+
+        // create withdrawal
+        uint256 withdrawAmount = 15e18;
+        uint256 withdrawalId = assetLayer.nextWithdrawalId();
+        app.withdrawERC20(address(token), users[0], withdrawAmount);
+
+        uint256 prevSettlementTime = assetLayer.getSettlementTime(withdrawalId);
+        uint256 addedDelay = 3 days;
+
+        AssetLayer.Withdrawal memory withdrawalBefore = assetLayer
+            .getWithdrawal(withdrawalId);
+
+        vm.prank(factory);
+        assetLayer.extendWithdrawalDelay(withdrawalId, uint24(addedDelay));
+
+        AssetLayer.Withdrawal memory withdrawalAfter = assetLayer.getWithdrawal(
+            withdrawalId
+        );
+
+        assertEq(
+            assetLayer.getSettlementTime(withdrawalId) - prevSettlementTime,
+            addedDelay
+        );
+        assertEq(withdrawalAfter.delay - withdrawalBefore.delay, addedDelay);
+
+        vm.warp(
+            uint256(withdrawalBefore.enqueuedAt) +
+                uint256(withdrawalBefore.delay)
+        );
+        assertFalse(assetLayer.settled(withdrawalId));
+
+        vm.warp(block.timestamp + addedDelay);
+        assertTrue(assetLayer.settled(withdrawalId));
+        assetLayer.executeDirectSettlement(withdrawalId);
     }
 
     function getMockApp()

@@ -20,11 +20,15 @@ contract AssetLayer is IAssetLayerV0_1, Multicallable {
     using RawCallLib for address;
 
     event WithdrawalAdded(
-        WithdrawalType indexed wtype,
-        address indexed asset,
+        uint256 indexed withdrawalId,
+        bytes21 indexed assetId,
         address indexed recipient,
-        uint256 withdrawalId,
         uint256 assetDenominator,
+        uint256 settlesAt
+    );
+    event WithdrawDelayExtended(
+        uint256 indexed withdrawalId,
+        uint256 addedDelay,
         uint256 settlesAt
     );
 
@@ -35,11 +39,11 @@ contract AssetLayer is IAssetLayerV0_1, Multicallable {
     error NotYetSettled();
     error UnknownSettlementStatus();
     error NonexistentWithdrawal();
-    error InvalidWithdrawalType();
+    error InvalidAssetType();
     error Frozen();
     error NotFrozen();
 
-    enum WithdrawalType {
+    enum AssetType {
         None,
         ERC20,
         ERC721,
@@ -49,7 +53,7 @@ contract AssetLayer is IAssetLayerV0_1, Multicallable {
     struct Withdrawal {
         uint64 enqueuedAt;
         uint24 delay;
-        WithdrawalType wtype;
+        AssetType atype;
         address asset;
         address recipient;
         uint256 assetDenominator; // amount token ID
@@ -58,6 +62,8 @@ contract AssetLayer is IAssetLayerV0_1, Multicallable {
     struct Freeze {
         uint64 lastEnd;
         uint64 start;
+        uint64 globalDelayExtendTime;
+        uint24 globalDelayExtension;
         bytes32 validWithdrawalsRoot;
     }
 
@@ -97,7 +103,7 @@ contract AssetLayer is IAssetLayerV0_1, Multicallable {
     modifier existingWithdrawal(uint256 _withdrawalId) {
         if (
             _withdrawalId >= nextWithdrawalId ||
-            withdrawals[_withdrawalId].wtype == WithdrawalType.None
+            withdrawals[_withdrawalId].atype == AssetType.None
         ) revert NonexistentWithdrawal();
         _;
     }
@@ -174,7 +180,8 @@ contract AssetLayer is IAssetLayerV0_1, Multicallable {
     ) external payable only(upgrader) {
         address payable logicModuleCached = logicModule;
         LogicProxy(logicModuleCached).upgradeTo(_newLogicImplementation);
-        if (_doPostCall) address(logicModuleCached).rawCall(_postUpgradeData);
+        if (_doPostCall)
+            address(logicModuleCached).rawCall(_postUpgradeData, msg.value);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -183,24 +190,6 @@ contract AssetLayer is IAssetLayerV0_1, Multicallable {
 
     function setDefaultDelay(uint24 _delay) external only(factory) {
         withdrawDefaultDelay = _delay;
-    }
-
-    function extendGlobalDelay(uint256 _delayIncrease) external only(factory) {
-        uint256 delayExtendTimeCached = delayExtendTime;
-        uint256 delayExtensionCached = delayExtension;
-        if (delayExtendTimeCached == 0) {
-            delayExtendTime = uint64(block.timestamp);
-            delayExtension = _delayIncrease.safeCastTo24();
-        } else {
-            delayExtendTime = Math
-                .max(
-                    delayExtendTimeCached,
-                    block.timestamp - delayExtensionCached
-                )
-                .safeCastTo64();
-            delayExtension = (delayExtensionCached + _delayIncrease)
-                .safeCastTo24();
-        }
     }
 
     function resetGlobalDelayIncrease() external only(factory) {
@@ -217,7 +206,7 @@ contract AssetLayer is IAssetLayerV0_1, Multicallable {
         address _recipient,
         uint256 _amount
     ) external only(logicModule) {
-        _addWithdrawal(WithdrawalType.ERC20, _token, _recipient, _amount);
+        _addWithdrawal(AssetType.ERC20, _token, _recipient, _amount);
     }
 
     function withdrawERC721(
@@ -225,14 +214,14 @@ contract AssetLayer is IAssetLayerV0_1, Multicallable {
         address _recipient,
         uint256 _tokenId
     ) external only(logicModule) {
-        _addWithdrawal(WithdrawalType.ERC721, _token, _recipient, _tokenId);
+        _addWithdrawal(AssetType.ERC721, _token, _recipient, _tokenId);
     }
 
     function withdrawNative(address _recipient, uint256 _amount)
         external
         only(logicModule)
     {
-        _addWithdrawal(WithdrawalType.NATIVE, address(0), _recipient, _amount);
+        _addWithdrawal(AssetType.NATIVE, address(0), _recipient, _amount);
     }
 
     function getWithdrawal(uint256 _withdrawalId)
@@ -241,6 +230,19 @@ contract AssetLayer is IAssetLayerV0_1, Multicallable {
         returns (Withdrawal memory)
     {
         return withdrawals[_withdrawalId];
+    }
+
+    function getAssetId(AssetType _atype, address _asset)
+        public
+        pure
+        returns (bytes21 assetId)
+    {
+        assembly {
+            mstore(0x00, _asset)
+            mstore8(0x0b, _atype)
+            mstore(0x20, 0x00)
+            assetId := mload(0x0b)
+        }
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -291,6 +293,14 @@ contract AssetLayer is IAssetLayerV0_1, Multicallable {
         return settlementTime <= block.timestamp;
     }
 
+    function getSettlementTime(uint256 _withdrawalId)
+        public
+        view
+        returns (uint256 settlementTime)
+    {
+        (, settlementTime) = _getSettlementTime(_withdrawalId);
+    }
+
     /*//////////////////////////////////////////////////////////////
                        EMERGENCY ACTIONS
     //////////////////////////////////////////////////////////////*/
@@ -302,6 +312,39 @@ contract AssetLayer is IAssetLayerV0_1, Multicallable {
     {
         if (settled(_withdrawalId)) revert AlreadySettled();
         withdrawals[_withdrawalId].delay += _addedDelay;
+        (, uint256 newSettlementTime) = _getSettlementTime(_withdrawalId);
+        emit WithdrawDelayExtended(
+            _withdrawalId,
+            _addedDelay,
+            newSettlementTime
+        );
+    }
+
+    function extendGlobalDelay(uint256 _delayIncrease) external only(factory) {
+        uint256 delayExtendTimeCached = delayExtendTime;
+        uint256 delayExtensionCached = delayExtension;
+        if (delayExtendTimeCached == 1) {
+            delayExtendTime = uint64(block.timestamp);
+            delayExtension = _delayIncrease.safeCastTo24();
+        } else {
+            delayExtendTime = Math
+                .max(
+                    delayExtendTimeCached,
+                    block.timestamp - delayExtensionCached
+                )
+                .safeCastTo64();
+            delayExtension = (delayExtensionCached + _delayIncrease)
+                .safeCastTo24();
+        }
+    }
+
+    function getGlobalDelayExtend() public view returns (uint256, uint256) {
+        uint256 delayExtendTimeCached = delayExtendTime;
+        uint256 delayExtensionCached = delayExtension;
+        return
+            delayExtendTimeCached == 1
+                ? (0, 0)
+                : (delayExtendTimeCached, delayExtensionCached);
     }
 
     function freeze() external only(factory) whileNotFrozen {
@@ -309,16 +352,19 @@ contract AssetLayer is IAssetLayerV0_1, Multicallable {
         uint256 freezeId = nextFreezeId;
         isFrozen = true;
         getFreeze[freezeId].start = uint64(block.timestamp);
+        getFreeze[freezeId].globalDelayExtendTime = delayExtendTime;
+        getFreeze[freezeId].globalDelayExtension = delayExtension;
     }
 
-    function unfreeze(bytes32 _validWithdrawalsRoot)
-        external
-        only(factory)
-        whileNotFrozen
-    {
+    function unfreeze(bytes32 _validWithdrawalsRoot) external only(factory) {
         if (!isFrozen) revert NotFrozen();
         isFrozen = false;
-        getFreeze[nextFreezeId++].validWithdrawalsRoot = _validWithdrawalsRoot;
+        uint256 currentFreezeId = nextFreezeId;
+        getFreeze[currentFreezeId].validWithdrawalsRoot = _validWithdrawalsRoot;
+        unchecked {
+            getFreeze[nextFreezeId = uint64(++currentFreezeId)]
+                .lastEnd = uint64(block.timestamp);
+        }
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -326,7 +372,7 @@ contract AssetLayer is IAssetLayerV0_1, Multicallable {
     //////////////////////////////////////////////////////////////*/
 
     function _addWithdrawal(
-        WithdrawalType _wtype,
+        AssetType _atype,
         address _asset,
         address _recipient,
         uint256 _assetDenominator
@@ -337,41 +383,44 @@ contract AssetLayer is IAssetLayerV0_1, Multicallable {
             withdrawals[withdrawalId] = Withdrawal({
                 enqueuedAt: uint64(block.timestamp),
                 delay: uint24(delay),
-                wtype: _wtype,
+                atype: _atype,
                 asset: _asset,
                 recipient: _recipient,
                 assetDenominator: _assetDenominator
             });
 
             emit WithdrawalAdded(
-                _wtype,
-                _asset,
-                _recipient,
                 withdrawalId,
+                getAssetId(_atype, _asset),
+                _recipient,
                 _assetDenominator,
-                block.timestamp + delay
+                _addDelay(
+                    block.timestamp + delay,
+                    delayExtendTime,
+                    delayExtension
+                )
             );
         }
     }
 
     function _executeSettlement(uint256 _withdrawalId) internal nonReentrant {
-        WithdrawalType wtype = withdrawals[_withdrawalId].wtype;
+        AssetType atype = withdrawals[_withdrawalId].atype;
         address asset = withdrawals[_withdrawalId].asset;
         address recipient = withdrawals[_withdrawalId].recipient;
         uint256 assetDenominator = withdrawals[_withdrawalId].assetDenominator;
         delete withdrawals[_withdrawalId];
-        if (wtype == WithdrawalType.ERC20) {
+        if (atype == AssetType.ERC20) {
             ERC20(asset).safeTransfer(recipient, assetDenominator);
-        } else if (wtype == WithdrawalType.ERC721) {
+        } else if (atype == AssetType.ERC721) {
             IERC721(asset).transferFrom(
                 address(this),
                 recipient,
                 assetDenominator
             );
-        } else if (wtype == WithdrawalType.NATIVE) {
+        } else if (atype == AssetType.NATIVE) {
             SafeTransferLib.safeTransferETH(recipient, assetDenominator);
         } else {
-            revert InvalidWithdrawalType();
+            revert InvalidAssetType();
         }
     }
 
