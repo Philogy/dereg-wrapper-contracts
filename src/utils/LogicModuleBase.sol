@@ -2,7 +2,6 @@
 pragma solidity 0.8.15;
 
 import {IAssetLayerV0_1} from "../IAssetLayerV0_1.sol";
-import {ILogicProxy} from "./ILogicProxy.sol";
 
 /// @author philogy <https://github.com/philogy>
 abstract contract LogicModuleBase {
@@ -82,7 +81,9 @@ abstract contract LogicModuleBase {
         getAssetLayer().withdrawNative(_recipient, _amount);
     }
 
-    function getAssetLayer() internal view returns (IAssetLayerV0_1) {
-        return IAssetLayerV0_1(ILogicProxy(address(this)).getAssetLayer());
+    function getAssetLayer() internal pure returns (IAssetLayerV0_1 assetLayer) {
+        assembly {
+            assetLayer := calldataload(sub(calldatasize(), 0x20))
+        }
     }
 }
