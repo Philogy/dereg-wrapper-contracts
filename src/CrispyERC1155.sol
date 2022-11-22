@@ -9,7 +9,6 @@ abstract contract CrispyERC1155 is IERC1155 {
     error ZeroAddress();
     error InputMismatch();
     error NotApprovedOrOwner();
-    error SenderNotOwner();
     error InsufficientBalance();
     error ReceiveCheckFailed();
 
@@ -87,9 +86,8 @@ abstract contract CrispyERC1155 is IERC1155 {
         if (_to == address(0)) revert ZeroAddress();
         if (_from != msg.sender && !operatorApprovals[_from][msg.sender]) revert NotApprovedOrOwner();
         if (_amount == 0) return;
-        if (_amount > 1) revert InsufficientBalance();
         (address owner, uint96 auxData) = _getTokenData(_tokenId);
-        if (_from != owner) revert SenderNotOwner();
+        if (_amount > 1 || _from != owner) revert InsufficientBalance();
         _setTokenData(_tokenId, _to, auxData);
         emit TransferSingle(msg.sender, _from, _to, _tokenId, 1);
         _doSafeTransferAcceptanceCheck(_from, _to, _tokenId, _data);
@@ -116,9 +114,8 @@ abstract contract CrispyERC1155 is IERC1155 {
             // prettier-ignore
             unchecked { ++i; }
             if (amount == 0) continue;
-            if (amount > 1) revert InsufficientBalance();
             (address owner, uint96 auxData) = _getTokenData(tokenId);
-            if (_from != owner) revert SenderNotOwner();
+            if (amount > 1 || _from != owner) revert InsufficientBalance();
             _setTokenData(tokenId, _to, auxData);
         }
         emit TransferBatch(msg.sender, _from, _to, _tokenIds, _amounts);
