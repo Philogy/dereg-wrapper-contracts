@@ -1,3 +1,2 @@
-solmate/=lib/solmate/src/
 @openzeppelin/=lib/openzeppelin-contracts/contracts
 solady/=lib/solady/src/

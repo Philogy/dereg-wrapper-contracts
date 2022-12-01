@@ -18,6 +18,11 @@ contract AssetLayerV0_1Test is Test {
         uint256 assetDenominator,
         uint256 settlesAt
     );
+    event WithdrawDelayExtended(
+        uint256 indexed withdrawalId,
+        uint256 addedDelay,
+        uint256 settlesAt
+    );
 
     address factory = vm.addr(0xfac10111);
     address upgrader = vm.addr(0xaa11aa);
@@ -148,6 +153,13 @@ contract AssetLayerV0_1Test is Test {
         AssetLayer.Withdrawal memory withdrawalBefore = assetLayer
             .getWithdrawal(withdrawalId);
 
+        vm.expectEmit(true, true, true, true);
+        emit WithdrawDelayExtended(
+            withdrawalId,
+            addedDelay,
+            block.timestamp + defaultDelay + addedDelay
+        );
+
         vm.prank(factory);
         assetLayer.extendWithdrawalDelay(withdrawalId, uint24(addedDelay));
 
@@ -171,6 +183,8 @@ contract AssetLayerV0_1Test is Test {
         assertTrue(assetLayer.settled(withdrawalId));
         assetLayer.executeDirectSettlement(withdrawalId);
     }
+
+    function testGlobalDelay() public {}
 
     function getMockApp()
         internal

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-3.0-only
 pragma solidity 0.8.15;
 
 import {Test} from "forge-std/Test.sol";
@@ -183,4 +183,6 @@ contract CripsyERC1155Test is Test {
             assertEq(balances2[i], accounts[i] == account2 ? 1 : 0);
         }
     }
+
+    function testBatchTransfer() public {}
 }

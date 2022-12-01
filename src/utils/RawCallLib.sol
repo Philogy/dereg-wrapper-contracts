@@ -12,16 +12,9 @@ library RawCallLib {
         bytes memory _data,
         uint256 _value
     ) internal {
+        // solhint-disable-next-line no-inline-assembly
         assembly {
-            let success := call(
-                gas(),
-                _addr,
-                _value,
-                add(_data, 0x20),
-                mload(_data),
-                0,
-                0
-            )
+            let success := call(gas(), _addr, _value, add(_data, 0x20), mload(_data), 0, 0)
             if iszero(success) {
                 returndatacopy(0x00, 0x00, returndatasize())
                 revert(0x00, returndatasize())

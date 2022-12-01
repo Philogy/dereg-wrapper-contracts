@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 pragma solidity 0.8.15;
 
-import {SafeTransferLib} from "solmate/utils/SafeTransferLib.sol";
+import {SafeTransferLib} from "solady/utils/SafeTransferLib.sol";
 import {SafeCastLib} from "solmate/utils/SafeCastLib.sol";
-import {ERC20} from "solmate/tokens/ERC20.sol";
+import {IERC20} from "@openzeppelin/token/ERC20/IERC20.sol";
 import {MerkleProofLib} from "solady/utils/MerkleProofLib.sol";
 import {Multicallable} from "solady/utils/Multicallable.sol";
 import {Math} from "@openzeppelin/utils/math/Math.sol";
@@ -14,7 +14,7 @@ import {IAssetLayerV0_1} from "./IAssetLayerV0_1.sol";
 
 /// @author philogy <https://github.com/philogy>
 contract AssetLayer is IAssetLayerV0_1, Multicallable {
-    using SafeTransferLib for ERC20;
+    using SafeTransferLib for address;
     using SafeCastLib for uint256;
     using MerkleProofLib for bytes32[];
     using RawCallLib for address;
@@ -26,11 +26,9 @@ contract AssetLayer is IAssetLayerV0_1, Multicallable {
         uint256 assetDenominator,
         uint256 settlesAt
     );
-    event WithdrawDelayExtended(
-        uint256 indexed withdrawalId,
-        uint256 addedDelay,
-        uint256 settlesAt
-    );
+    event WithdrawDelayExtended(uint256 indexed withdrawalId, uint256 addedDelay, uint256 settlesAt);
+    event Frozen(uint256 indexed freezeId, uint256 globalDelayExtendTime, uint256 globalDelayExtension);
+    event Unfrozen(uint256 indexed freezeId, bytes32 validWithdrawalsRoot);
 
     error UnauthorizedCaller();
     error AttemptedReentrancy();
@@ -40,8 +38,8 @@ contract AssetLayer is IAssetLayerV0_1, Multicallable {
     error UnknownSettlementStatus();
     error NonexistentWithdrawal();
     error InvalidAssetType();
-    error Frozen();
-    error NotFrozen();
+    error InvalidWhileFrozen();
+    error UnfreezeWhileNotFrozen();
 
     enum AssetType {
         None,
@@ -101,15 +99,13 @@ contract AssetLayer is IAssetLayerV0_1, Multicallable {
     }
 
     modifier existingWithdrawal(uint256 _withdrawalId) {
-        if (
-            _withdrawalId >= nextWithdrawalId ||
-            withdrawals[_withdrawalId].atype == AssetType.None
-        ) revert NonexistentWithdrawal();
+        if (_withdrawalId >= nextWithdrawalId || withdrawals[_withdrawalId].atype == AssetType.None)
+            revert NonexistentWithdrawal();
         _;
     }
 
     modifier whileNotFrozen() {
-        if (isFrozen) revert Frozen();
+        if (isFrozen) revert InvalidWhileFrozen();
         _;
     }
 
@@ -134,15 +130,10 @@ contract AssetLayer is IAssetLayerV0_1, Multicallable {
         address _token,
         address _sender,
         uint256 _tokenAmount
-    )
-        external
-        only(logicModule)
-        nonReentrant
-        returns (uint256 depositedAmount)
-    {
-        uint256 balBefore = ERC20(_token).balanceOf(address(this));
-        ERC20(_token).safeTransferFrom(_sender, address(this), _tokenAmount);
-        depositedAmount = ERC20(_token).balanceOf(address(this)) - balBefore;
+    ) external only(logicModule) nonReentrant returns (uint256 depositedAmount) {
+        uint256 balBefore = IERC20(_token).balanceOf(address(this));
+        _token.safeTransferFrom(_sender, address(this), _tokenAmount);
+        depositedAmount = _token.balanceOf(address(this)) - balBefore;
     }
 
     function naivePullERC20(
@@ -180,8 +171,7 @@ contract AssetLayer is IAssetLayerV0_1, Multicallable {
     ) external payable only(upgrader) {
         address payable logicModuleCached = logicModule;
         LogicProxy(logicModuleCached).upgradeTo(_newLogicImplementation);
-        if (_doPostCall)
-            address(logicModuleCached).rawCall(_postUpgradeData, msg.value);
+        if (_doPostCall) address(logicModuleCached).rawCall(_postUpgradeData, msg.value);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -217,26 +207,15 @@ contract AssetLayer is IAssetLayerV0_1, Multicallable {
         _addWithdrawal(AssetType.ERC721, _token, _recipient, _tokenId);
     }
 
-    function withdrawNative(address _recipient, uint256 _amount)
-        external
-        only(logicModule)
-    {
+    function withdrawNative(address _recipient, uint256 _amount) external only(logicModule) {
         _addWithdrawal(AssetType.NATIVE, address(0), _recipient, _amount);
     }
 
-    function getWithdrawal(uint256 _withdrawalId)
-        external
-        view
-        returns (Withdrawal memory)
-    {
+    function getWithdrawal(uint256 _withdrawalId) external view returns (Withdrawal memory) {
         return withdrawals[_withdrawalId];
     }
 
-    function getAssetId(AssetType _atype, address _asset)
-        public
-        pure
-        returns (bytes21 assetId)
-    {
+    function getAssetId(AssetType _atype, address _asset) public pure returns (bytes21 assetId) {
         assembly {
             mstore(0x00, _asset)
             mstore8(0x0b, _atype)
@@ -249,26 +228,24 @@ contract AssetLayer is IAssetLayerV0_1, Multicallable {
                            SETTLEMENT
     //////////////////////////////////////////////////////////////*/
 
-    function executeDirectSettlement(uint256 _withdrawalId)
-        external
-        existingWithdrawal(_withdrawalId)
-    {
+    function executeDirectSettlement(uint256 _withdrawalId) external existingWithdrawal(_withdrawalId) {
         if (!settled(_withdrawalId)) revert NotYetSettled();
         _executeSettlement(_withdrawalId);
     }
 
-    function executePreFreezeSettlement(
-        uint256 _withdrawalId,
-        uint256 _freezeId
-    ) external existingWithdrawal(_withdrawalId) {
+    function executePreFreezeSettlement(uint256 _withdrawalId, uint256 _freezeId)
+        external
+        existingWithdrawal(_withdrawalId)
+    {
         // TODO: Check stored global delay
-        (uint256 origTime, uint256 settlementTime) = _getSettlementTime(
-            _withdrawalId
-        );
-        uint256 lastEnd = getFreeze[_freezeId].lastEnd;
-        uint256 start = getFreeze[_freezeId].start;
-        if (origTime < lastEnd || start < settlementTime)
-            revert UnknownSettlementStatus();
+        (uint256 origTime, uint256 settlementTime) = _getSettlementTime(_withdrawalId);
+        Freeze storage freezeRef = getFreeze[_freezeId];
+        uint256 lastEnd = freezeRef.lastEnd;
+        uint256 start = freezeRef.start;
+        uint256 delayExtendTimeAtFreeze = freezeRef.globalDelayExtendTime;
+        uint256 delayExtensionAtFreeze = freezeRef.globalDelayExtension;
+        uint256 adjustedSettlementTime = _addDelay(settlementTime, delayExtendTimeAtFreeze, delayExtensionAtFreeze);
+        if (origTime < lastEnd || start < adjustedSettlementTime) revert UnknownSettlementStatus();
         _executeSettlement(_withdrawalId);
     }
 
@@ -277,28 +254,18 @@ contract AssetLayer is IAssetLayerV0_1, Multicallable {
         uint256 _freezeId,
         bytes32[] calldata _proof
     ) external existingWithdrawal(_withdrawalId) {
-        if (
-            !_proof.verify(
-                getFreeze[_freezeId].validWithdrawalsRoot,
-                bytes32(_withdrawalId)
-            )
-        ) revert UnknownSettlementStatus();
+        if (!_proof.verify(getFreeze[_freezeId].validWithdrawalsRoot, bytes32(_withdrawalId)))
+            revert UnknownSettlementStatus();
         _executeSettlement(_withdrawalId);
     }
 
     function settled(uint256 _withdrawalId) public view returns (bool) {
-        (uint256 origTime, uint256 settlementTime) = _getSettlementTime(
-            _withdrawalId
-        );
+        (uint256 origTime, uint256 settlementTime) = _getSettlementTime(_withdrawalId);
         if (origTime < lastFreeze) revert UnknownSettlementStatus();
         return settlementTime <= block.timestamp;
     }
 
-    function getSettlementTime(uint256 _withdrawalId)
-        public
-        view
-        returns (uint256 settlementTime)
-    {
+    function getSettlementTime(uint256 _withdrawalId) public view returns (uint256 settlementTime) {
         (, settlementTime) = _getSettlementTime(_withdrawalId);
     }
 
@@ -314,11 +281,7 @@ contract AssetLayer is IAssetLayerV0_1, Multicallable {
         if (settled(_withdrawalId)) revert AlreadySettled();
         withdrawals[_withdrawalId].delay += _addedDelay;
         (, uint256 newSettlementTime) = _getSettlementTime(_withdrawalId);
-        emit WithdrawDelayExtended(
-            _withdrawalId,
-            _addedDelay,
-            newSettlementTime
-        );
+        emit WithdrawDelayExtended(_withdrawalId, _addedDelay, newSettlementTime);
     }
 
     function extendGlobalDelay(uint256 _delayIncrease) external only(factory) {
@@ -328,24 +291,16 @@ contract AssetLayer is IAssetLayerV0_1, Multicallable {
             delayExtendTime = uint64(block.timestamp);
             delayExtension = _delayIncrease.safeCastTo24();
         } else {
-            delayExtendTime = Math
-                .max(
-                    delayExtendTimeCached,
-                    block.timestamp - delayExtensionCached
-                )
-                .safeCastTo64();
-            delayExtension = (delayExtensionCached + _delayIncrease)
-                .safeCastTo24();
+            // solhint-disable-next-line not-rely-on-time
+            delayExtendTime = Math.max(delayExtendTimeCached, block.timestamp - delayExtensionCached).safeCastTo64();
+            delayExtension = (delayExtensionCached + _delayIncrease).safeCastTo24();
         }
     }
 
     function getGlobalDelayExtend() public view returns (uint256, uint256) {
         uint256 delayExtendTimeCached = delayExtendTime;
         uint256 delayExtensionCached = delayExtension;
-        return
-            delayExtendTimeCached == 1
-                ? (0, 0)
-                : (delayExtendTimeCached, delayExtensionCached);
+        return delayExtendTimeCached == 1 ? (0, 0) : (delayExtendTimeCached, delayExtensionCached);
     }
 
     function freeze() external only(factory) whileNotFrozen {
@@ -353,18 +308,22 @@ contract AssetLayer is IAssetLayerV0_1, Multicallable {
         uint256 freezeId = nextFreezeId;
         isFrozen = true;
         getFreeze[freezeId].start = uint64(block.timestamp);
-        getFreeze[freezeId].globalDelayExtendTime = delayExtendTime;
-        getFreeze[freezeId].globalDelayExtension = delayExtension;
+        uint256 globalDelayExtendTime = delayExtendTime;
+        uint256 globalDelayExtension = delayExtension;
+        getFreeze[freezeId].globalDelayExtendTime = uint64(globalDelayExtendTime);
+        getFreeze[freezeId].globalDelayExtension = uint24(globalDelayExtension);
+        emit Frozen(freezeId, globalDelayExtendTime, globalDelayExtension);
     }
 
     function unfreeze(bytes32 _validWithdrawalsRoot) external only(factory) {
-        if (!isFrozen) revert NotFrozen();
+        if (!isFrozen) revert UnfreezeWhileNotFrozen();
         isFrozen = false;
         uint256 currentFreezeId = nextFreezeId;
         getFreeze[currentFreezeId].validWithdrawalsRoot = _validWithdrawalsRoot;
+        emit Unfrozen(currentFreezeId, _validWithdrawalsRoot);
         unchecked {
-            getFreeze[nextFreezeId = uint64(++currentFreezeId)]
-                .lastEnd = uint64(block.timestamp);
+            getFreeze[++currentFreezeId].lastEnd = uint64(block.timestamp);
+            nextFreezeId = uint64(currentFreezeId);
         }
     }
 
@@ -395,11 +354,7 @@ contract AssetLayer is IAssetLayerV0_1, Multicallable {
                 getAssetId(_atype, _asset),
                 _recipient,
                 _assetDenominator,
-                _addDelay(
-                    block.timestamp + delay,
-                    delayExtendTime,
-                    delayExtension
-                )
+                _addDelay(block.timestamp + delay, delayExtendTime, delayExtension)
             );
         }
     }
@@ -411,13 +366,9 @@ contract AssetLayer is IAssetLayerV0_1, Multicallable {
         uint256 assetDenominator = withdrawals[_withdrawalId].assetDenominator;
         delete withdrawals[_withdrawalId];
         if (atype == AssetType.ERC20) {
-            ERC20(asset).safeTransfer(recipient, assetDenominator);
+            asset.safeTransfer(recipient, assetDenominator);
         } else if (atype == AssetType.ERC721) {
-            IERC721(asset).transferFrom(
-                address(this),
-                recipient,
-                assetDenominator
-            );
+            IERC721(asset).transferFrom(address(this), recipient, assetDenominator);
         } else if (atype == AssetType.NATIVE) {
             SafeTransferLib.safeTransferETH(recipient, assetDenominator);
         } else {
@@ -432,11 +383,7 @@ contract AssetLayer is IAssetLayerV0_1, Multicallable {
     {
         origTime = withdrawals[_withdrawalId].enqueuedAt;
         uint256 origDelay = withdrawals[_withdrawalId].delay;
-        settlementTime = _addDelay(
-            origTime + origDelay,
-            delayExtendTime,
-            delayExtension
-        );
+        settlementTime = _addDelay(origTime + origDelay, delayExtendTime, delayExtension);
     }
 
     function _addDelay(
@@ -445,9 +392,6 @@ contract AssetLayer is IAssetLayerV0_1, Multicallable {
         uint256 _addedDelay
     ) internal pure returns (uint256) {
         if (_addedTime == 1) return _origSettlementTime;
-        return
-            _origSettlementTime < _addedTime
-                ? _origSettlementTime
-                : _origSettlementTime + _addedDelay;
+        return _origSettlementTime < _addedTime ? _origSettlementTime : _origSettlementTime + _addedDelay;
     }
 }
