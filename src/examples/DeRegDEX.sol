@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-only
 pragma solidity 0.8.15;
 
-import {SafeTransferLib} from "solady/utils/SafeTransferLib.sol";
+import {LogicModuleBase} from "../utils/LogicModuleBase.sol";
+import {Initializable} from "@openzeppelin/proxy/utils/Initializable.sol";
 
-contract DeRegDEX {
+contract DeRegDEX is LogicModuleBase, Initializable {
     error NonexistentOrder();
     error OrderExpired();
     error InsufficientAmount();
@@ -32,7 +33,7 @@ contract DeRegDEX {
         uint256 _orderExpiry
     ) external {
         if (_tokenToSell == address(0)) revert ZeroAddress();
-        SafeTransferLib.safeTransferFrom(_tokenToSell, msg.sender, address(this), _depositAmount);
+        safeTransferERC20From(_tokenToSell, msg.sender, _depositAmount);
         getOrder[nextOrderId++] = Order({
             tokenBeingSold: _tokenToSell,
             amountBeingSold: _depositAmount,
@@ -48,8 +49,8 @@ contract DeRegDEX {
         if (order.tokenBeingSold == address(0)) revert NonexistentOrder();
         if (order.expiresAt <= block.timestamp) revert OrderExpired();
         delete getOrder[_orderId];
-        SafeTransferLib.safeTransferFrom(order.tokenBeingBought, msg.sender, order.recipient, _amount);
+        uint256 sendAmount = safeTransferERC20From(order.tokenBeingBought, msg.sender, order.recipient, _amount);
         if (_amount < order.minBuyAmount) revert InsufficientAmount();
-        SafeTransferLib.safeTransfer(order.tokenBeingSold, msg.sender, order.amountBeingSold);
+        transferERC20(order.tokenBeingSold, msg.sender, order.amountBeingSold);
     }
 }
