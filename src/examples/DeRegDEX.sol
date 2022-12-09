@@ -1,14 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-only
 pragma solidity 0.8.15;
 
-import {LogicModuleBase} from "../utils/LogicModuleBase.sol";
-import {Initializable} from "@openzeppelin/proxy/utils/Initializable.sol";
+import {SafeTransferLib} from "solady/utils/SafeTransferLib.sol";
 
-/// @author philogy <https://github.com/philogy>
-contract DeRegDEX is LogicModuleBase, Initializable {
+contract DeRegDEX {
     error NonexistentOrder();
     error OrderExpired();
     error InsufficientAmount();
+    error ZeroAddress();
 
     struct Order {
         address tokenBeingSold;
@@ -33,14 +32,10 @@ contract DeRegDEX is LogicModuleBase, Initializable {
         uint256 _orderExpiry
     ) external {
         if (_tokenToSell == address(0)) revert ZeroAddress();
-        uint256 depositedAmount = safeTransferERC20From(
-            _tokenToSell,
-            msg.sender,
-            _depositAmount
-        );
+        SafeTransferLib.safeTransferFrom(_tokenToSell, msg.sender, address(this), _depositAmount);
         getOrder[nextOrderId++] = Order({
             tokenBeingSold: _tokenToSell,
-            amountBeingSold: depositedAmount,
+            amountBeingSold: _depositAmount,
             tokenBeingBought: _tokenToBuy,
             minBuyAmount: _minReceiveAmount,
             recipient: msg.sender,
@@ -53,13 +48,8 @@ contract DeRegDEX is LogicModuleBase, Initializable {
         if (order.tokenBeingSold == address(0)) revert NonexistentOrder();
         if (order.expiresAt <= block.timestamp) revert OrderExpired();
         delete getOrder[_orderId];
-        uint256 sendAmount = safeTransferERC20From(
-            order.tokenBeingBought,
-            msg.sender,
-            order.recipient,
-            _amount
-        );
-        if (sendAmount < order.minBuyAmount) revert InsufficientAmount();
-        transferERC20(order.tokenBeingSold, msg.sender, order.amountBeingSold);
+        SafeTransferLib.safeTransferFrom(order.tokenBeingBought, msg.sender, order.recipient, _amount);
+        if (_amount < order.minBuyAmount) revert InsufficientAmount();
+        SafeTransferLib.safeTransfer(order.tokenBeingSold, msg.sender, order.amountBeingSold);
     }
 }
